@@ -1,0 +1,10 @@
+[package]
+name = "swash-basics"
+description = "A very basic example of how to use Swash."
+version = "0.1.0"
+authors = ["Speykious <speykious@gmail.com>"]
+edition = "2021"
+
+[dependencies]
+image = "0.24.7"
+swash = "0.1.8"
