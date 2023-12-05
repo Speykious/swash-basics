@@ -1,6 +1,4 @@
-use std::fs;
-
-use image::{ColorType, ImageFormat, save_buffer_with_format};
+use image::{save_buffer_with_format, ColorType, ImageFormat};
 use swash::scale::image::Image;
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
 use swash::shape::cluster::GlyphCluster;
@@ -88,9 +86,6 @@ fn render_glyph(
 }
 
 fn main() {
-    // we're gonna put glyph images in that folder
-    fs::create_dir_all("glyph_imgs").unwrap();
-
     let font = Font::from_file("Roboto-Regular.ttf", 0).unwrap();
 
     // Shape context to turn chars into glyphs
@@ -108,11 +103,11 @@ fn main() {
 
     // Start shapin
     let font_ref = font.as_ref();
-    let mut glyph_idx = 0;
+    let mut glyph_images = Vec::new();
     shaper.shape_with(|glyph_cluster: &GlyphCluster| {
-        for glyph in glyph_cluster.glyphs {
+        glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
             // render each glyph individually
-            let glyph_img = render_glyph(
+            render_glyph(
                 &mut scale_ctx,
                 &font_ref,
                 28.,
@@ -121,26 +116,63 @@ fn main() {
                 glyph.x,
                 glyph.y,
             )
-            .unwrap();
-
-            if glyph_img.placement.height == 0 {
-                println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
-            } else {
-                let width = glyph_img.placement.width;
-                let height = glyph_img.placement.height;
-
-                save_buffer_with_format(
-                    format!("glyph_imgs/glyph-{}.png", glyph_idx),
-                    &glyph_img.data,
-                    width,
-                    height,
-                    ColorType::L8,
-                    ImageFormat::Png,
-                )
-                .unwrap();
-            }
-
-            glyph_idx += 1;
-        }
+        }));
     });
+
+    let total_width: usize = (glyph_images.iter())
+        .map(|glyph_img| glyph_img.placement.width as usize)
+        .sum();
+
+    let baseline_height: usize = (glyph_images.iter())
+        .map(|glyph_img| glyph_img.placement.height as usize)
+        .max()
+        .unwrap_or_default();
+
+    let total_height: usize = (glyph_images.iter())
+        .map(|glyph_img| {
+            glyph_img.placement.height as usize
+                + baseline_height.saturating_add_signed(-glyph_img.placement.top as isize)
+        })
+        .max()
+        .unwrap_or_default();
+
+    let mut img_buffer = vec![0; total_width * total_height];
+
+    let mut glyph_offset: usize = 0;
+    for (glyph_idx, glyph_img) in glyph_images.iter().enumerate() {
+        let width = glyph_img.placement.width as usize;
+        let height = glyph_img.placement.height as usize;
+
+        if height == 0 {
+            println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
+        } else {
+            let x_off = glyph_img.placement.left as isize;
+            let y_off = baseline_height.saturating_add_signed(-glyph_img.placement.top as isize);
+
+            for y in 0..usize::min(height, total_height) {
+                for x in 0..width {
+                    let x_buf = x.saturating_add_signed(x_off) + glyph_offset;
+                    let y_buf = y.saturating_add(y_off).min(total_height - 1);
+
+                    let buffer_idx = y_buf * total_width + x_buf;
+                    let glyph_idx = y * width + x;
+
+                    let pixel: u8 = img_buffer[buffer_idx];
+                    img_buffer[buffer_idx] = pixel.saturating_add(glyph_img.data[glyph_idx]);
+                }
+            }
+        }
+
+        glyph_offset += width;
+    }
+
+    save_buffer_with_format(
+        "swash-text.png",
+        &img_buffer,
+        total_width as u32,
+        total_height as u32,
+        ColorType::L8,
+        ImageFormat::Png,
+    )
+    .unwrap();
 }
