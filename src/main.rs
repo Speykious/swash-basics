@@ -146,6 +146,7 @@ fn main() {
         if height == 0 {
             println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
         } else {
+            // the spacing is probably wrong in here but idk how to fix it
             let x_off = glyph_img.placement.left as isize;
             let y_off = baseline_height.saturating_add_signed(-glyph_img.placement.top as isize);
 
