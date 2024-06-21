@@ -1,10 +1,10 @@
 use image::{save_buffer_with_format, ColorType, ImageFormat};
 use swash::scale::image::Image;
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
-use swash::shape::cluster::GlyphCluster;
+use swash::shape::cluster::{Glyph, GlyphCluster};
 use swash::shape::ShapeContext;
 use swash::text::Script;
-use swash::{zeno, Attributes, CacheKey, Charmap, FontRef, GlyphId};
+use swash::{zeno, Attributes, CacheKey, Charmap, FontRef};
 
 pub struct Font {
     /// Full content of the font file
@@ -60,9 +60,7 @@ fn render_glyph(
     font: &FontRef,
     size: f32,
     hint: bool,
-    glyph_id: GlyphId,
-    x: f32,
-    y: f32,
+    glyph: &Glyph,
 ) -> Option<Image> {
     use zeno::{Format, Vector};
 
@@ -71,7 +69,7 @@ fn render_glyph(
 
     // Compute the fractional offset-- you'll likely want to quantize this
     // in a real renderer
-    let offset = Vector::new(x.fract(), y.fract());
+    let offset = Vector::new(glyph.x.fract(), glyph.y.fract());
 
     // Render glyph into image (subpixel format = alpha)
     // This will give us an image with only an alpha channel
@@ -82,7 +80,7 @@ fn render_glyph(
     ])
     .format(Format::Alpha)
     .offset(offset)
-    .render(&mut scaler, glyph_id)
+    .render(&mut scaler, glyph.id)
 }
 
 fn main() {
@@ -96,32 +94,33 @@ fn main() {
         .build();
 
     // feed shaper with chars to get them as glyphs later
-    shaper.add_str("A quick brown fox?");
+    shaper.add_str("A quick brown fox?   ");
+    shaper.add_str("怠惰な犬の上にジャンプするのだ！");
 
     // Scale context to turn glyphs into images
     let mut scale_ctx = ScaleContext::new();
+    let font_size: f32 = 64.;
+    let font_metrics = shaper.metrics().scale(font_size);
+
+    // I somehow figured out that this is the correct formula to convert something
+    // like `glyph.advance` to the correct number needed when drawing out glyphs.
+    let em_to_px = |em: f32| (em * font_size / font_metrics.units_per_em as f32) as usize;
 
     // Start shapin
     let font_ref = font.as_ref();
+    let mut glyphs = Vec::new();
     let mut glyph_images = Vec::new();
     shaper.shape_with(|glyph_cluster: &GlyphCluster| {
+        glyphs.extend_from_slice(glyph_cluster.glyphs);
+
         glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
             // render each glyph individually
-            render_glyph(
-                &mut scale_ctx,
-                &font_ref,
-                28.,
-                true,
-                glyph.id,
-                glyph.x,
-                glyph.y,
-            )
+            render_glyph(&mut scale_ctx, &font_ref, font_size, true, glyph)
         }));
     });
 
-    let total_width: usize = (glyph_images.iter())
-        .map(|glyph_img| glyph_img.placement.width as usize)
-        .sum();
+    // measure dimensions and baseline, and create image buffer
+    let total_width: usize = glyphs.iter().map(|glyph| em_to_px(glyph.advance)).sum();
 
     let baseline_height: usize = (glyph_images.iter())
         .map(|glyph_img| glyph_img.placement.height as usize)
@@ -138,21 +137,21 @@ fn main() {
 
     let mut img_buffer = vec![0; total_width * total_height];
 
-    let mut glyph_offset: usize = 0;
-    for (glyph_idx, glyph_img) in glyph_images.iter().enumerate() {
+    // draw each glyph image in a loop
+    let mut glyph_advance: usize = 0;
+    for (glyph_idx, (glyph_img, glyph)) in glyph_images.iter().zip(glyphs.iter()).enumerate() {
         let width = glyph_img.placement.width as usize;
         let height = glyph_img.placement.height as usize;
 
         if height == 0 {
             println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
         } else {
-            // the spacing is probably wrong in here but idk how to fix it
             let x_off = glyph_img.placement.left as isize;
             let y_off = baseline_height.saturating_add_signed(-glyph_img.placement.top as isize);
 
             for y in 0..usize::min(height, total_height) {
                 for x in 0..width {
-                    let x_buf = x.saturating_add_signed(x_off) + glyph_offset;
+                    let x_buf = x.saturating_add_signed(x_off) + glyph_advance;
                     let y_buf = y.saturating_add(y_off).min(total_height - 1);
 
                     let buffer_idx = y_buf * total_width + x_buf;
@@ -164,7 +163,7 @@ fn main() {
             }
         }
 
-        glyph_offset += width;
+        glyph_advance += em_to_px(glyph.advance);
     }
 
     save_buffer_with_format(
