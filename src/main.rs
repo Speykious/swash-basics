@@ -4,7 +4,7 @@ use swash::scale::{Render, ScaleContext, Source, StrikeWith};
 use swash::shape::cluster::{Glyph, GlyphCluster};
 use swash::shape::ShapeContext;
 use swash::text::Script;
-use swash::{zeno, Attributes, CacheKey, Charmap, FontRef};
+use swash::{zeno, Attributes, CacheKey, Charmap, FontRef, Metrics};
 
 pub struct Font {
     /// Full content of the font file
@@ -84,86 +84,156 @@ fn render_glyph(
 }
 
 fn main() {
-    let font = Font::from_file("Roboto-Regular.ttf", 0).unwrap();
+    let roboto = Font::from_file("Roboto-Regular.ttf", 0).unwrap();
+    let noto_cjk = Font::from_file("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0).unwrap();
+
+    let mut roboto_glyphs = Vec::new();
+    let mut roboto_glyph_images = Vec::new();
+
+    let mut noto_cjk_glyphs = Vec::new();
+    let mut noto_cjk_glyph_images = Vec::new();
+
+    let font_size: f32 = 64.;
 
     // Shape context to turn chars into glyphs
     let mut shape_ctx = ShapeContext::new();
-    let mut shaper = shape_ctx
-        .builder(font.as_ref())
-        .script(Script::Latin)
-        .build();
-
-    // feed shaper with chars to get them as glyphs later
-    shaper.add_str("A quick brown fox?   ");
-    shaper.add_str("怠惰な犬の上にジャンプするのだ！");
 
     // Scale context to turn glyphs into images
     let mut scale_ctx = ScaleContext::new();
-    let font_size: f32 = 64.;
-    let font_metrics = shaper.metrics().scale(font_size);
+
+    let roboto_metrics = {
+        let mut roboto_shaper = shape_ctx
+            .builder(roboto.as_ref())
+            .script(Script::Latin)
+            .build();
+
+        roboto_shaper.add_str("a quick brown fox?   ");
+
+        let metrics = roboto_shaper.metrics().scale(font_size);
+
+        // Start shapin
+        roboto_shaper.shape_with(|glyph_cluster: &GlyphCluster| {
+            roboto_glyphs.extend_from_slice(glyph_cluster.glyphs);
+
+            roboto_glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
+                // render each glyph individually
+                render_glyph(&mut scale_ctx, &roboto.as_ref(), font_size, true, glyph)
+            }));
+        });
+
+        metrics
+    };
+
+    let noto_cjk_metrics = {
+        let mut noto_cjk_shaper = shape_ctx
+            .builder(noto_cjk.as_ref())
+            .script(Script::Hiragana)
+            .build();
+
+        noto_cjk_shaper.add_str("怠惰な犬の上にジャンプするのだーー！");
+
+        let metrics = noto_cjk_shaper.metrics().scale(font_size);
+
+        // Start shapin
+        noto_cjk_shaper.shape_with(|glyph_cluster: &GlyphCluster| {
+            noto_cjk_glyphs.extend_from_slice(glyph_cluster.glyphs);
+
+            noto_cjk_glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
+                // render each glyph individually
+                render_glyph(&mut scale_ctx, &noto_cjk.as_ref(), font_size, true, glyph)
+            }));
+        });
+
+        metrics
+    };
 
     // I somehow figured out that this is the correct formula to convert something
     // like `glyph.advance` to the correct number needed when drawing out glyphs.
-    let em_to_px = |em: f32| (em * font_size / font_metrics.units_per_em as f32) as usize;
-
-    // Start shapin
-    let font_ref = font.as_ref();
-    let mut glyphs = Vec::new();
-    let mut glyph_images = Vec::new();
-    shaper.shape_with(|glyph_cluster: &GlyphCluster| {
-        glyphs.extend_from_slice(glyph_cluster.glyphs);
-
-        glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
-            // render each glyph individually
-            render_glyph(&mut scale_ctx, &font_ref, font_size, true, glyph)
-        }));
-    });
+    let em_to_px =
+        |em: f32, metrics: &Metrics| (em * font_size / metrics.units_per_em as f32) as usize;
 
     // measure dimensions and baseline, and create image buffer
-    let total_width: usize = glyphs.iter().map(|glyph| em_to_px(glyph.advance)).sum();
+    let total_width: usize = {
+        let roboto_cluster_width: usize = (roboto_glyphs.iter())
+            .map(|g| em_to_px(g.advance, &roboto_metrics))
+            .sum();
 
-    let baseline_height: usize = (glyph_images.iter())
-        .map(|glyph_img| glyph_img.placement.height as usize)
-        .max()
-        .unwrap_or_default();
+        let noto_cjk_cluster_width: usize = (noto_cjk_glyphs.iter())
+            .map(|g| em_to_px(g.advance, &noto_cjk_metrics))
+            .sum();
 
-    let total_height: usize = (glyph_images.iter())
-        .map(|glyph_img| {
-            glyph_img.placement.height as usize
-                + baseline_height.saturating_add_signed(-glyph_img.placement.top as isize)
-        })
-        .max()
-        .unwrap_or_default();
+        roboto_cluster_width + noto_cjk_cluster_width
+    };
+
+    let baseline_height: usize = {
+        let roboto_baseline_height = (roboto_glyph_images.iter())
+            .map(|glyph_img| glyph_img.placement.height as usize)
+            .max()
+            .unwrap_or_default();
+
+        let noto_cjk_baseline_height = (noto_cjk_glyph_images.iter())
+            .map(|glyph_img| glyph_img.placement.height as usize)
+            .max()
+            .unwrap_or_default();
+
+        roboto_baseline_height.max(noto_cjk_baseline_height)
+    };
+
+    let total_height: usize = {
+        let roboto_total_height = (roboto_glyph_images.iter())
+            .map(|glyph_img| {
+                glyph_img.placement.height as usize
+                    + baseline_height.saturating_add_signed(-glyph_img.placement.top as isize)
+            })
+            .max()
+            .unwrap_or_default();
+
+        let noto_cjk_total_height = (noto_cjk_glyph_images.iter())
+            .map(|glyph_img| {
+                glyph_img.placement.height as usize
+                    + baseline_height.saturating_add_signed(-glyph_img.placement.top as isize)
+            })
+            .max()
+            .unwrap_or_default();
+
+        roboto_total_height.max(noto_cjk_total_height)
+    };
 
     let mut img_buffer = vec![0; total_width * total_height];
 
-    // draw each glyph image in a loop
     let mut glyph_advance: usize = 0;
-    for (glyph_idx, (glyph_img, glyph)) in glyph_images.iter().zip(glyphs.iter()).enumerate() {
-        let width = glyph_img.placement.width as usize;
-        let height = glyph_img.placement.height as usize;
+    for (metrics, glyphs, glyph_images) in [
+        (roboto_metrics, roboto_glyphs, roboto_glyph_images),
+        (noto_cjk_metrics, noto_cjk_glyphs, noto_cjk_glyph_images),
+    ] {
+        // draw each glyph image in a loop
+        for (glyph_idx, (glyph_img, glyph)) in glyph_images.iter().zip(glyphs.iter()).enumerate() {
+            let width = glyph_img.placement.width as usize;
+            let height = glyph_img.placement.height as usize;
 
-        if height == 0 {
-            println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
-        } else {
-            let x_off = glyph_img.placement.left as isize;
-            let y_off = baseline_height.saturating_add_signed(-glyph_img.placement.top as isize);
+            if height == 0 {
+                println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
+            } else {
+                let x_off = glyph_img.placement.left as isize;
+                let y_off =
+                    baseline_height.saturating_add_signed(-glyph_img.placement.top as isize);
 
-            for y in 0..usize::min(height, total_height) {
-                for x in 0..width {
-                    let x_buf = x.saturating_add_signed(x_off) + glyph_advance;
-                    let y_buf = y.saturating_add(y_off).min(total_height - 1);
+                for y in 0..usize::min(height, total_height) {
+                    for x in 0..width {
+                        let x_buf = x.saturating_add_signed(x_off) + glyph_advance;
+                        let y_buf = y.saturating_add(y_off).min(total_height - 1);
 
-                    let buffer_idx = y_buf * total_width + x_buf;
-                    let glyph_idx = y * width + x;
+                        let buffer_idx = y_buf * total_width + x_buf;
+                        let glyph_idx = y * width + x;
 
-                    let pixel: u8 = img_buffer[buffer_idx];
-                    img_buffer[buffer_idx] = pixel.saturating_add(glyph_img.data[glyph_idx]);
+                        let pixel: u8 = img_buffer[buffer_idx];
+                        img_buffer[buffer_idx] = pixel.saturating_add(glyph_img.data[glyph_idx]);
+                    }
                 }
             }
-        }
 
-        glyph_advance += em_to_px(glyph.advance);
+            glyph_advance += em_to_px(glyph.advance, &metrics);
+        }
     }
 
     save_buffer_with_format(
