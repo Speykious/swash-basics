@@ -1,10 +1,10 @@
 use image::{save_buffer_with_format, ColorType, ImageFormat};
 use swash::scale::image::Image;
-use swash::scale::{Render, ScaleContext, Source, StrikeWith};
+use swash::scale::{Render, ScaleContext, Scaler, Source, StrikeWith};
 use swash::shape::cluster::{Glyph, GlyphCluster};
-use swash::shape::ShapeContext;
+use swash::shape::{Direction, ShapeContext};
 use swash::text::Script;
-use swash::{zeno, Attributes, CacheKey, Charmap, FontRef, Metrics};
+use swash::{zeno, Attributes, CacheKey, Charmap, FontRef};
 
 pub struct Font {
     /// Full content of the font file
@@ -55,17 +55,8 @@ impl Font {
     }
 }
 
-fn render_glyph(
-    context: &mut ScaleContext,
-    font: &FontRef,
-    size: f32,
-    hint: bool,
-    glyph: &Glyph,
-) -> Option<Image> {
+fn render_glyph(scaler: &mut Scaler, glyph: &Glyph) -> Option<Image> {
     use zeno::{Format, Vector};
-
-    // Scale context to turn glyphs into images
-    let mut scaler = context.builder(*font).size(size).hint(hint).build();
 
     // Compute the fractional offset-- you'll likely want to quantize this
     // in a real renderer
@@ -80,20 +71,20 @@ fn render_glyph(
     ])
     .format(Format::Alpha)
     .offset(offset)
-    .render(&mut scaler, glyph.id)
+    .render(scaler, glyph.id)
 }
 
 fn main() {
     let roboto = Font::from_file("Roboto-Regular.ttf", 0).unwrap();
     let noto_cjk = Font::from_file("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0).unwrap();
+    let noto_arab =
+        Font::from_file("/usr/share/fonts/noto/NotoNaskhArabic-Regular.ttf", 0).unwrap();
 
-    let mut roboto_glyphs = Vec::new();
-    let mut roboto_glyph_images = Vec::new();
+    let mut glyphs = Vec::new();
+    let mut glyph_images = Vec::new();
 
-    let mut noto_cjk_glyphs = Vec::new();
-    let mut noto_cjk_glyph_images = Vec::new();
-
-    let font_size: f32 = 64.;
+    let font_size = 64.;
+    let hint = false;
 
     // Shape context to turn chars into glyphs
     let mut shape_ctx = ShapeContext::new();
@@ -101,148 +92,179 @@ fn main() {
     // Scale context to turn glyphs into images
     let mut scale_ctx = ScaleContext::new();
 
-    let roboto_metrics = {
+    {
+        let mut scaler = scale_ctx
+            .builder(roboto.as_ref())
+            .size(font_size)
+            .hint(hint)
+            .build();
+
         let mut roboto_shaper = shape_ctx
             .builder(roboto.as_ref())
             .script(Script::Latin)
+            .size(font_size)
             .build();
 
         roboto_shaper.add_str("a quick brown fox?   ");
 
-        let metrics = roboto_shaper.metrics().scale(font_size);
-
         // Start shapin
         roboto_shaper.shape_with(|glyph_cluster: &GlyphCluster| {
-            roboto_glyphs.extend_from_slice(glyph_cluster.glyphs);
+            glyphs.extend_from_slice(glyph_cluster.glyphs);
 
-            roboto_glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
+            glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
                 // render each glyph individually
-                render_glyph(&mut scale_ctx, &roboto.as_ref(), font_size, true, glyph)
+                render_glyph(&mut scaler, glyph)
             }));
         });
-
-        metrics
     };
 
-    let noto_cjk_metrics = {
+    {
+        let mut scaler = scale_ctx
+            .builder(noto_cjk.as_ref())
+            .size(font_size)
+            .hint(hint)
+            .build();
+
         let mut noto_cjk_shaper = shape_ctx
             .builder(noto_cjk.as_ref())
             .script(Script::Hiragana)
+            .size(font_size)
             .build();
 
-        noto_cjk_shaper.add_str("怠惰な犬の上にジャンプするのだーー！");
-
-        let metrics = noto_cjk_shaper.metrics().scale(font_size);
+        noto_cjk_shaper.add_str("怠惰な犬の上にジャンプするのだ！  ");
 
         // Start shapin
         noto_cjk_shaper.shape_with(|glyph_cluster: &GlyphCluster| {
-            noto_cjk_glyphs.extend_from_slice(glyph_cluster.glyphs);
+            glyphs.extend_from_slice(glyph_cluster.glyphs);
 
-            noto_cjk_glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
+            glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
                 // render each glyph individually
-                render_glyph(&mut scale_ctx, &noto_cjk.as_ref(), font_size, true, glyph)
+                render_glyph(&mut scaler, glyph)
+            }));
+        });
+    };
+
+    {
+        let mut scaler = scale_ctx
+            .builder(noto_arab.as_ref())
+            .size(font_size)
+            .hint(hint)
+            .build();
+
+        let mut arab_shaper = shape_ctx
+            .builder(noto_arab.as_ref())
+            .script(Script::Arabic)
+            .direction(Direction::RightToLeft)
+            .size(font_size)
+            // .features(&[("dlig", 1)])
+            .build();
+
+        let arab_str = "لكن لا بد أن أوضح لك أن كل    ";
+        arab_shaper.add_str(arab_str);
+        println!("{} chars", arab_str.chars().count());
+
+        // Start shapin
+        let mut n_glyphs = 0;
+        arab_shaper.shape_with(|glyph_cluster: &GlyphCluster| {
+            n_glyphs += glyph_cluster.glyphs.len();
+            println!("{} glyphs", glyph_cluster.glyphs.len());
+            glyphs.extend_from_slice(glyph_cluster.glyphs);
+
+            glyph_images.extend((glyph_cluster.glyphs.iter()).filter_map(|glyph| {
+                // render each glyph individually
+                render_glyph(&mut scaler, glyph)
             }));
         });
 
-        metrics
+        println!("total glyphs: {n_glyphs}");
     };
-
-    // I somehow figured out that this is the correct formula to convert something
-    // like `glyph.advance` to the correct number needed when drawing out glyphs.
-    let em_to_px =
-        |em: f32, metrics: &Metrics| (em * font_size / metrics.units_per_em as f32) as usize;
 
     // measure dimensions and baseline, and create image buffer
-    let total_width: usize = {
-        let roboto_cluster_width: usize = (roboto_glyphs.iter())
-            .map(|g| em_to_px(g.advance, &roboto_metrics))
-            .sum();
+    let total_width: usize = (glyphs.iter()).map(|g| g.advance).sum::<f32>() as usize;
 
-        let noto_cjk_cluster_width: usize = (noto_cjk_glyphs.iter())
-            .map(|g| em_to_px(g.advance, &noto_cjk_metrics))
-            .sum();
+    let baseline_height: usize = (glyph_images.iter())
+        .map(|glyph_img| glyph_img.placement.height as usize)
+        .max()
+        .unwrap_or_default();
 
-        roboto_cluster_width + noto_cjk_cluster_width
-    };
+    let total_height: usize = (glyph_images.iter())
+        .map(|glyph_img| {
+            glyph_img.placement.height as usize
+                + baseline_height.saturating_add_signed(-glyph_img.placement.top as isize)
+        })
+        .max()
+        .unwrap_or_default();
 
-    let baseline_height: usize = {
-        let roboto_baseline_height = (roboto_glyph_images.iter())
-            .map(|glyph_img| glyph_img.placement.height as usize)
-            .max()
-            .unwrap_or_default();
+    let mut img_buffer: Vec<[u8; 4]> = vec![[0, 0, 0, 0]; total_width * total_height];
 
-        let noto_cjk_baseline_height = (noto_cjk_glyph_images.iter())
-            .map(|glyph_img| glyph_img.placement.height as usize)
-            .max()
-            .unwrap_or_default();
-
-        roboto_baseline_height.max(noto_cjk_baseline_height)
-    };
-
-    let total_height: usize = {
-        let roboto_total_height = (roboto_glyph_images.iter())
-            .map(|glyph_img| {
-                glyph_img.placement.height as usize
-                    + baseline_height.saturating_add_signed(-glyph_img.placement.top as isize)
-            })
-            .max()
-            .unwrap_or_default();
-
-        let noto_cjk_total_height = (noto_cjk_glyph_images.iter())
-            .map(|glyph_img| {
-                glyph_img.placement.height as usize
-                    + baseline_height.saturating_add_signed(-glyph_img.placement.top as isize)
-            })
-            .max()
-            .unwrap_or_default();
-
-        roboto_total_height.max(noto_cjk_total_height)
-    };
-
-    let mut img_buffer = vec![0; total_width * total_height];
+    // draw each glyph image in a loop
+    let mut col = 0;
 
     let mut glyph_advance: usize = 0;
-    for (metrics, glyphs, glyph_images) in [
-        (roboto_metrics, roboto_glyphs, roboto_glyph_images),
-        (noto_cjk_metrics, noto_cjk_glyphs, noto_cjk_glyph_images),
-    ] {
-        // draw each glyph image in a loop
-        for (glyph_idx, (glyph_img, glyph)) in glyph_images.iter().zip(glyphs.iter()).enumerate() {
-            let width = glyph_img.placement.width as usize;
-            let height = glyph_img.placement.height as usize;
+    for (glyph_idx, (glyph_img, glyph)) in glyph_images.iter().zip(glyphs.iter()).enumerate() {
+        let width = glyph_img.placement.width as usize;
+        let height = glyph_img.placement.height as usize;
 
-            if height == 0 {
-                println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
-            } else {
-                let x_off = glyph_img.placement.left as isize;
-                let y_off =
-                    baseline_height.saturating_add_signed(-glyph_img.placement.top as isize);
+        if height == 0 {
+            println!("Glyph #{} has height 0 (probably a space)", glyph_idx);
+        } else {
+            let x_off = glyph_img.placement.left as isize;
+            let y_off = baseline_height.saturating_add_signed(-glyph_img.placement.top as isize);
 
-                for y in 0..usize::min(height, total_height) {
-                    for x in 0..width {
-                        let x_buf = x.saturating_add_signed(x_off) + glyph_advance;
-                        let y_buf = y.saturating_add(y_off).min(total_height - 1);
+            for y in 0..usize::min(height, total_height) {
+                for x in 0..width {
+                    let x_buf = x.saturating_add_signed(x_off) + glyph_advance;
+                    let y_buf = y.saturating_add(y_off).min(total_height - 1);
 
-                        let buffer_idx = y_buf * total_width + x_buf;
-                        let glyph_idx = y * width + x;
+                    let buffer_idx = y_buf * total_width + x_buf;
+                    let glyph_idx = y * width + x;
 
-                        let pixel: u8 = img_buffer[buffer_idx];
-                        img_buffer[buffer_idx] = pixel.saturating_add(glyph_img.data[glyph_idx]);
+                    let [r, g, b, a] = img_buffer[buffer_idx];
+                    let v = glyph_img.data[glyph_idx];
+
+                    img_buffer[buffer_idx] = [
+                        v.saturating_add(r),
+                        v.saturating_add(g),
+                        v.saturating_add(b),
+                        v.saturating_add(a),
+                    ];
+
+                    if col & 0b001 > 0 {
+                        img_buffer[buffer_idx][0] = r;
+                    }
+
+                    if col & 0b010 > 0 {
+                        img_buffer[buffer_idx][1] = g;
+                    }
+
+                    if col & 0b100 > 0 {
+                        img_buffer[buffer_idx][2] = b;
                     }
                 }
             }
-
-            glyph_advance += em_to_px(glyph.advance, &metrics);
         }
+
+        glyph_advance += glyph.advance.round() as usize; // em_to_px(glyph.advance, &metrics);
+        col = (col + 1) % 8;
     }
 
     save_buffer_with_format(
         "swash-text.png",
-        &img_buffer,
+        elements_as_bytes(&img_buffer),
         total_width as u32,
         total_height as u32,
-        ColorType::L8,
+        ColorType::Rgba8,
         ImageFormat::Png,
     )
     .unwrap();
+}
+
+pub(crate) fn elements_as_bytes<T>(elements: &[T]) -> &'_ [u8] {
+    // SAFETY: the length of the slice is always right
+    unsafe {
+        std::slice::from_raw_parts(
+            elements.as_ptr() as *const u8,
+            elements.len() * std::mem::size_of::<T>(),
+        )
+    }
 }
